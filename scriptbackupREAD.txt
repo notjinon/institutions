@@ -1,0 +1,3 @@
+This folder is here to provide a backup repository for the scripts I wrote.
+
+Do not use this for up-to-date versions! This is only here in case git fails, as a more portable backup.
