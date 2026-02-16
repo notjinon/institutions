@@ -1,0 +1,51 @@
+{
+  "_comment": "Box shared download links for DIME data files",
+  "_instructions": [
+    "1. Upload CSV/Parquet files to Box manually via web portal",
+    "2. Right-click each file → Share → Create Shared Link",
+    "3. Copy the shared link and replace the placeholder URLs below",
+    "4. Make sure links are set to 'People with the link' can download",
+    "5. Box shared links look like: https://app.box.com/s/xxxxxxxxxxxxx",
+    "6. Run: python download_data.py --year 2000 (or --all)"
+  ],
+  
+  "dime_csv": {
+    "2000": "REPLACE_WITH_BOX_SHARED_LINK",
+    "2002": "REPLACE_WITH_BOX_SHARED_LINK",
+    "2004": "REPLACE_WITH_BOX_SHARED_LINK",
+    "2006": "REPLACE_WITH_BOX_SHARED_LINK",
+    "2008": "REPLACE_WITH_BOX_SHARED_LINK",
+    "2010": "REPLACE_WITH_BOX_SHARED_LINK",
+    "2012": "REPLACE_WITH_BOX_SHARED_LINK",
+    "2014": "REPLACE_WITH_BOX_SHARED_LINK",
+    "2016": "REPLACE_WITH_BOX_SHARED_LINK",
+    "2018": "REPLACE_WITH_BOX_SHARED_LINK",
+    "2020": "REPLACE_WITH_BOX_SHARED_LINK",
+    "2022": "REPLACE_WITH_BOX_SHARED_LINK",
+    "2024": "REPLACE_WITH_BOX_SHARED_LINK"
+  },
+  
+  "dime_parquet": {
+    "2000": "REPLACE_WITH_BOX_SHARED_LINK",
+    "2002": "REPLACE_WITH_BOX_SHARED_LINK",
+    "2004": "REPLACE_WITH_BOX_SHARED_LINK",
+    "2006": "REPLACE_WITH_BOX_SHARED_LINK",
+    "2008": "REPLACE_WITH_BOX_SHARED_LINK",
+    "2010": "REPLACE_WITH_BOX_SHARED_LINK",
+    "2012": "REPLACE_WITH_BOX_SHARED_LINK",
+    "2014": "REPLACE_WITH_BOX_SHARED_LINK",
+    "2016": "REPLACE_WITH_BOX_SHARED_LINK",
+    "2020": "REPLACE_WITH_BOX_SHARED_LINK",
+    "2022": "REPLACE_WITH_BOX_SHARED_LINK",
+    "2024": "REPLACE_WITH_BOX_SHARED_LINK"
+  },
+  
+  "nimsp": {
+    "party_donor_csv": "REPLACE_WITH_BOX_SHARED_LINK",
+    "party_donor_parquet": "REPLACE_WITH_BOX_SHARED_LINK"
+  },
+  
+  "primary_dates": {
+    "legislative_primary_dates_full": "REPLACE_WITH_BOX_SHARED_LINK"
+  }
+}

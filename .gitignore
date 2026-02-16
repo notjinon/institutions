@@ -1,0 +1,80 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data files - EXCLUDE from version control (too large)
+# CSV files in DIME data/ - these are large source files
+DIME data/**/*.csv
+
+# Parquet files - these are binary and can be regenerated
+DIME data/**/*.parquet
+DIME data/*_parquet/
+**/*.parquet
+
+# NIMSP data files
+NIMSP data/**/*.csv
+NIMSP data/**/*.parquet
+
+# CSV files in upperlower/ - keep only the structure, not the data
+# Comment out this line if you want to track these files:
+# upperlower/**/*.csv
+
+# Primary dates CSV - small enough to track, but you can exclude if needed
+# primarydates/**/*.csv
+
+# Keep the directory structure but ignore data files
+!DIME data/.gitkeep
+!NIMSP data/.gitkeep
+!upperlower/.gitkeep
+!primarydates/.gitkeep
+
+# Outputs - these are generated files, exclude from version control
+outputs/
+!outputs/.gitkeep
+
+# data_sources.json is small metadata, include it in version control
+!data_sources.json
+
+# Debug files
+debug_output.txt
+result.txt
+
+# Temporary files
+*.tmp
+*.bak
+*.log
