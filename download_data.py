@@ -5,7 +5,9 @@ Download DIME data files from Box cloud storage using shared links.
 
 Usage:
     python download_data.py --year 2000 2002 2004    # Download specific years
-    python download_data.py --all                    # Download all configured files
+    python download_data.py --all                    # Download all configured years
+    python download_data.py --other                  # Download supporting files (NIMSP party_donor.parquet)
+    python download_data.py --all --other            # Download everything
     python download_data.py --overwrite --year 2000  # Re-download existing files
 """
 

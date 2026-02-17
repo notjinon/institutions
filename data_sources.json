@@ -26,6 +26,6 @@
   },
   
   "nimsp": {
-    "party_donor_parquet": "REPLACE_WITH_BOX_SHARED_LINK"
+    "party_donor_parquet": "https://app.box.com/shared/static/ymhwyn48qwlnierr81n9xi162q70idyt.parquet"
   }
 }

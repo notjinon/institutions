@@ -44,24 +44,29 @@ pip install requests tqdm duckdb pandas
 #### 3. Download Parquet Data Files
 
 ```bash
-# Download specific years
+# Download specific years (DIME candidate-donor data)
 python download_data.py --year 2000 2002 2004
 
-# Download everything
+# Download all DIME years
 python download_data.py --all
 
-# Download supporting parquet files
+# Download supporting files (NIMSP party_donor.parquet)
 python download_data.py --other
 
 # Re-download existing files
 python download_data.py --overwrite --year 2000
 ```
 
+**About `--other`:**
+Downloads `NIMSP data/party_donor.parquet` which contains party donor data needed for the matching analysis. Required for the full pipeline.
+
 ### Workflow
 
 **Option A: Download pre-made Parquet files** (default, fastest)
 ```bash
+# Download all DIME data + supporting party_donor.parquet
 python download_data.py --all
+python download_data.py --other
 python cspy-match.py
 ```
 
@@ -90,6 +95,7 @@ python cspy-match.py
 
 ❌ **Not Tracked (in `.gitignore`):**
 - `data_sources.json` (private Box links; request from project owner)
+- `NIMSP data/party_donor.parquet` (downloaded via `python download_data.py --other`)
 - CSV files (`DIME data/**/*.csv`)
 - Parquet files (`DIME data/**/*.parquet`)
 - Analysis outputs (`outputs/`)
@@ -138,7 +144,7 @@ institutions/
 │       └── 2004_candidate_donor.parquet
 │
 ├── NIMSP data/
-│   ├── party_donor.csv
+│   ├── party_donor.parquet    # Party donor data (from Box via --other)
 │   └── notes.txt
 │
 ├── outputs/
