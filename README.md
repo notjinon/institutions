@@ -15,282 +15,141 @@ This project uses a size-based storage policy for data and code.
 - **Large raw CSVs (uncompressed Parquet-scale)** → **not in Git or Box**; source from Stanford DIME: [https://data.stanford.edu/dime](https://data.stanford.edu/dime)
 - **Code and scripts** → kept in **Git**
 
-### Quick Setup
+# institutions — Technical Reference
 
-#### 1. First-Time Setup
+Purpose
+-------
+Provide reproducible processing and analysis of DIME candidate-donor files and NIMSP party-donor data. This README is a concise operator/developer manual: prerequisites, configuration, data layout, script reference, workflows, expected outputs, and troubleshooting.
 
-```bash
-# Clone the repository
-git clone <your-repo-url>
-cd institutions
-
-# Install dependencies
-pip install requests tqdm duckdb pandas
-
-# Get private Box links config from repository owner
-# Place data_sources.json in the project root (same folder as download_data.py)
-```
-
-`data_sources.json` is required to download source files and is intentionally not committed to Git. Get this file from the project owner and place it in the working directory before running `download_data.py`.
-
-#### 2. Upload Medium Parquet Data to Box (One-Time)
-
-1. Go to [box.com](https://box.com) and upload your Parquet files
-2. For each file, right-click → **Share** → **Create Shared Link**
-3. Set permissions to "People with the link can **download**"
-4. Copy the shared link (format: `https://app.box.com/s/xxxxx`)
-5. Paste links into `data_sources.json`
-
-#### 3. Download Parquet Data Files
+Prerequisites
+-------------
+- Python 3.8+
+- Install minimal runtime dependencies used by scripts:
 
 ```bash
-# Download specific years (DIME candidate-donor data)
-python download_data.py --year 2000 2002 2004
-
-# Download all DIME years
-python download_data.py --all
-
-# Download supporting files (NIMSP party_donor.parquet)
-python download_data.py --other
-
-# Re-download existing files
-python download_data.py --overwrite --year 2000
+python -m pip install --upgrade pip
+python -m pip install pandas duckdb requests tqdm python-dateutil
 ```
 
-**About `--other`:**
-Downloads `NIMSP data/party_donor.parquet` which contains party donor data needed for the matching analysis. Required for the full pipeline.
+- Workspace: clone the repository and run commands from the repository root.
 
-### Workflow
+Configuration
+-------------
+- `data_sources.json` — required for `download_data.py`. Contains private Box shared links. This file is excluded from Git; acquire it from the project owner and place it at the repository root.
+- `paths.py` — single source of truth for all file locations. Do not move or duplicate. Modify only when you want to change directory locations used by all scripts.
 
-**Option A: Download pre-made Parquet files** (default, fastest)
+Data layout (canonical)
+-----------------------
+- `DIME data/` — raw CSVs and generated per-year parquet directories `YYYY_parquet/`
+- `NIMSP data/` — `party_donor.parquet` and supporting files
+- `outputs/` — generated analysis CSVs named `{year}-analysis.csv`
+- `primarydates/`, `upperlower/` — auxiliary CSVs used in matching
+
+Quick operational commands
+--------------------------
+Use these exact commands from the repo root (Windows PowerShell or POSIX shell):
+
+- Download medium/parquet files from Box (requires `data_sources.json`):
+
 ```bash
-# Download all DIME data + supporting party_donor.parquet
-python download_data.py --all
-python download_data.py --other
-python cspy-match.py
+python download_data.py --year 2000 2002 2004      # download specific years
+python download_data.py --all                      # download all configured years
+python download_data.py --other                    # download NIMSP party_donor.parquet
+python download_data.py --overwrite --year 2000    # force re-download
 ```
 
-**Option B: Download large raw CSV zip from Stanford DIME, generate Parquet locally**
+- Convert raw DIME CSVs to Parquet (local conversion):
+
 ```bash
-# Source: https://data.stanford.edu/dime
-# Download CSV zip and extract into DIME data/
-python convert_year.py 2000 2002 2004
-python cspy-match.py
+python convert_year.py 2000 2002 2004              # generate year parquet dirs
+python convert_year.py 2000 --overwrite            # regenerate a single year
 ```
 
-**Option C: Selective download**
+- Run the main analysis pipeline (matching):
+
 ```bash
-python download_data.py --year 2000
-python cspy-match.py
-# Enter years: 2000
+python cspy-match.py                                 # interactive: supply years
+python cspy-match2.py                                # alternate or batch mode
 ```
 
-### What's Tracked in Git?
+- Validate output:
 
-✅ **Tracked:**
-- All Python scripts (`*.py`)
-- Configuration files (`paths.py`)
-- Documentation (`README.md`, `*.md`)
-- Directory structure markers
-
-❌ **Not Tracked (in `.gitignore`):**
-- `data_sources.json` (private Box links; request from project owner)
-- `NIMSP data/party_donor.parquet` (downloaded via `python download_data.py --other`)
-- CSV files (`DIME data/**/*.csv`)
-- Parquet files (`DIME data/**/*.parquet`)
-- Analysis outputs (`outputs/`)
-- Debug files (`debug_output.txt`, `result.txt`)
-
-### Sharing Your Work
-
-**To share code changes:**
-```bash
-git add cspy-match.py
-git commit -m "Improved name matching algorithm"
-git push
-```
-
-**To share new medium parquet data:**
-1. Upload Parquet to Box
-2. Get shared link
-3. Update your local `data_sources.json`
-4. Send updated `data_sources.json` to teammates through a private channel
-
-**To share analysis results:**
-- Small files (<10MB): Can commit to `outputs/` (update `.gitignore`)
-- Large files: Upload to Box and share link
-
-## Directory Structure
-
-```
-institutions/
-├── paths.py                          # Path management (DO NOT MOVE)
-├── download_data.py                 # Download data from Box cloud storage
-├── data_sources.json                # Box shared links configuration
-├── .gitignore                       # Exclude data files from Git
-├── cspy-match.py                    # Main analysis script
-├── convert_year.py                  # CSV to Parquet converter
-├── extract_rows.py                  # Row extraction utility
-│
-├── DIME data/
-│   ├── 2000_candidate_donor.csv
-│   ├── 2002_candidate_donor.csv
-│   ├── 2004_candidate_donor.csv
-│   ├── 2000_parquet/               # Auto-created by convert_year.py
-│   │   └── 2000_candidate_donor.parquet
-│   ├── 2002_parquet/
-│   │   └── 2002_candidate_donor.parquet
-│   └── 2004_parquet/
-│       └── 2004_candidate_donor.parquet
-│
-├── NIMSP data/
-│   ├── party_donor.parquet    # Party donor data (from Box via --other)
-│   └── notes.txt
-│
-├── outputs/
-│   ├── 2000-analysis.csv
-│   ├── 2002-analysis.csv
-│   └── 2004-analysis.csv
-│
-├── primarydates/
-│   └── legislative_primary_dates_full.csv
-│
-└── upperlower/
-    ├── 2000_upper.csv
-    ├── 2000_lower.csv
-    ├── 2002_upper.csv
-    └── ...
-```
-
-## Key Features
-
-### 1. **Automatic Path Resolution**
-- All paths are relative to the workspace root
-- No global file paths needed in scripts
-- Works regardless of where you run the script from
-
-### 2. **Parquet Output Structure**
-- Parquet files are organized in year-specific folders
-- Format: `DIME data/{year}_parquet/{year}_candidate_donor.parquet`
-- Example: `DIME data/2000_parquet/2000_candidate_donor.parquet`
-
-## Usage
-
-### Quick Start
-
-1. **Convert CSV to Parquet** (faster processing, optional but recommended):
-```bash
-python convert_year.py 2000 2002 2004
-```
-
-2. **Run Analysis**:
-```bash
-python cspy-match.py
-# When prompted, enter: 2000, 2002, 2004
-```
-
-3. **Validate Output**:
 ```bash
 python validate_output.py outputs/2000-analysis.csv
 ```
 
-### Convert CSV to Parquet
+Script reference (purpose and CLI)
+----------------------------------
+- `download_data.py` — downloads medium parquet assets and supporting files from Box. Requires `data_sources.json`.
+    - Flags: `--year`, `--all`, `--other`, `--overwrite`
+
+- `convert_year.py` — converts DIME CSV years to DuckDB/parquet layout used by analysis. Idempotent unless `--overwrite`.
+    - Usage: `python convert_year.py <year> [<year> ...] [--overwrite]`
+
+- `cspy-match.py` — primary analysis driver. Reads DIME parquet and `NIMSP data/party_donor.parquet`, writes `{year}-analysis.csv` in `outputs/`.
+    - Interactive by default; years may be provided via prompt or refactor for batch invocation.
+
+- `cspy-match2.py` — variant/batch mode of matching; consult inline header comments for differences.
+
+- `extract_rows.py` — utility to sample rows from CSVs for quick inspection.
+
+- `validate_output.py` — lightweight validator for output schema and basic integrity checks.
+
+- `update_candidate_ids_2000.py`, `update_candidate_state_2000.py` — back-compat / fix-up utilities for legacy ID/state corrections.
+
+Typical workflows
+-----------------
+1) Fast path (recommended when parquet files are available):
 
 ```bash
-# Convert single year
-python convert_year.py 2000
-
-# Convert multiple years
-python convert_year.py 2000 2002 2004
-
-# Overwrite existing parquet files
-python convert_year.py 2000 --overwrite
-```
-
-**What it does:**
-- Reads: `DIME data/2000_candidate_donor.csv`
-- Writes: `DIME data/2000_parquet/2000_candidate_donor.parquet`
-- Directories are created automatically
-
-### Run Main Analysis
-
-```bash
+python download_data.py --all
+python download_data.py --other
 python cspy-match.py
 ```
 
-**Interactive prompt:**
-```
-Enter target years (comma-separated, e.g. 2000, 2002, 2004): 2000, 2002
-```
-
-**What it does:**
-- Reads from all required folders (DIME data, NIMSP data, etc.)
-- Writes analysis results to: `outputs/{year}-analysis.csv`
-- All paths are managed by `paths.py`
-
-### Extract Rows from CSV
+2) Recompute from raw CSVs (if you obtained raw DIME zips):
 
 ```bash
-python extract_rows.py
+# extract raw CSVs into `DIME data/`
+python convert_year.py 2000 2002 2004
+python cspy-match.py
 ```
 
-**Interactive prompt:**
-```
-Enter CSV file path (relative to workspace root): DIME data/2000_candidate_donor.csv
-Number of rows to extract (default 100): 1000
-```
+3) Minimal debug run for a single year:
 
-**What it does:**
-- Extracts N rows from any CSV
-- Creates output in same directory as input
-- Supports relative paths from workspace root
-
-## Path Configuration
-
-All paths are defined in `paths.py`. To modify paths, edit that file:
-
-```python
-# Example: Change output directory
-OUTPUT_DIR = get_data_path("my_outputs")  # Instead of "outputs"
-
-# Example: Add new data source
-MY_DATA = get_data_path("my_folder/my_file.csv")
+```bash
+python convert_year.py 2000 --overwrite
+python cspy-match.py   # select 2000
 ```
 
-## Important Notes
+Outputs and schema
+------------------
+Outputs are CSV files written to `outputs/{year}-analysis.csv`. Expected core columns:
 
-1. **`paths.py` must stay in the workspace root** - All path resolution depends on it
-2. **No global paths in scripts** - If you see hardcoded paths, they should be moved to `paths.py`
-3. **Relative paths work everywhere** - Pass relative paths to utility functions; they'll be converted to absolute paths automatically
-4. **Output directories auto-create** - No need to manually create `outputs/`, `{year}_parquet/`, etc.
-5. **Name matching is intelligent** - Uses 3-tier strategy (exact → token-subset → fuzzy) to achieve ~90% match rate
-6. **One-pass processing** - `cspy-match.py` now produces correct output directly; retcon scripts no longer needed
+- `candidate_id`, `candidate_name`, `state`, `year`, `party`, `seat_type`, `party_donors_count`, `total_party_donors`, `total_candidate_donors`, `percentage`, `match_method`
 
-## Output Format
+Operational notes and expectations
+----------------------------------
+- All scripts use `paths.py` — do not hardcode alternate paths inside scripts.
+- Parquet generation via `convert_year.py` uses DuckDB; ensure `duckdb` is installed.
+- Name-matching strategy: exact → token-subset → fuzzy; `match_method` indicates which branch succeeded.
 
-The analysis CSV contains:
-- `candidate_id`: Format SS-PPP-YYYY-H-DD-CC (e.g., CA-DEM-2000-L-42-01)
-- `candidate_name`: Full name from DIME data
-- `party_donors_count`: Number of party donors who gave to this candidate
-- `total_party_donors`: Total unique party donors in state
-- `total_candidate_donors`: Total unique donors to candidate
-- `percentage`: % of party donors who gave to candidate
-- `candidate_state`: Election outcome (W=won general, P=lost general, L=lost primary, etc.)
-- `match_method`: How name was matched (exact, token_subset, fuzzy_best, fallback)
-- Plus: `seat_info`, `seat_type`, `state`, `party`, `year`
+Troubleshooting (quick checks)
+------------------------------
+- FileNotFoundError: confirm current working directory is repo root and `paths.py` exists.
+- Missing `data_sources.json`: obtain from owner; without it `download_data.py` will fail.
+- Parquet not created: verify raw CSV exists in `DIME data/` and run `convert_year.py` with `--overwrite`.
+- Performance: increase available memory or run per-year to reduce memory footprint.
 
-## Troubleshooting
+Developer notes
+---------------
+- Keep `paths.py` as canonical path resolver; any new script must use it for file IO.
+- Add tests for `cspy-match` logic before refactoring matching heuristics.
+- When adding new external deps, update the top `pip install` list and document version constraints.
 
-**FileNotFoundError when running scripts:**
-- Ensure you're in the workspace directory or have the correct working directory
-- Check that all input data files exist in their expected locations
-- Verify file names match exactly (case-sensitive on Linux/Mac)
-
-**Parquet files not creating:**
-- Run: `python convert_year.py 2000 --overwrite` to force re-creation
-- Check that `DIME data/` folder contains CSV files
-- Ensure DuckDB is installed: `pip install duckdb`
-
-**Paths module not found:**
-- Make sure `paths.py` is in the same directory as the script you're running
-- Verify `__init__.py` is NOT needed (this is a single-file module)
+Next steps
+----------
+- If you want, I can:
+    - Open a PR with this README change.
+    - Create a minimal `requirements.txt` or `pyproject.toml`.
+    - Add a non-interactive CLI wrapper for `cspy-match.py`.
