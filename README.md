@@ -1,142 +1,134 @@
-# Project Path Management & File Organization
+# institutions — Reproducible guide for R-first researchers
 
-## Overview
+This guide tells you exactly what to run (and why) so political-science researchers who prefer R can reproduce the pipeline. Short explanations are included where a choice affects reproducibility or performance.
 
-This project analyzes campaign finance data, matching state legislative candidates from DIME data against party donors from NIMSP data. The pipeline uses centralized path management (`paths.py`) to eliminate hardcoded paths and ensure portability.
+1. Essentials (why these matter)
+--------------------------------
+- Parquet files are used for performance and reproducibility: smaller I/O, columnar reads, friendly to both Python and R (`arrow`, `duckdb`).
+- `paths.py` centralizes file locations so scripts are portable; do not hardcode file locations.
+- Medium-sized files are stored on Box (private links in `data_sources.json`) to avoid committing large binaries to Git.
 
-## Data Management & Version Control
+2. Environment (minimal, step-by-step)
+--------------------------------------
+Follow these commands from the repository root.
 
-This project uses a size-based storage policy for data and code.
+2.1. System tools
 
-### Storage Policy
+Install Git and make sure you can run `python` and `R` from the shell.
 
-- **Small CSVs** → kept in **Git**
-- **Medium Parquet files** → kept in **Box** (downloaded via `download_data.py`)
-- **Large raw CSVs (uncompressed Parquet-scale)** → **not in Git or Box**; source from Stanford DIME: [https://data.stanford.edu/dime](https://data.stanford.edu/dime)
-- **Code and scripts** → kept in **Git**
+2.2. Python (needed by provided scripts)
 
-# institutions — Technical Reference
-
-Purpose
--------
-Provide reproducible processing and analysis of DIME candidate-donor files and NIMSP party-donor data. This README is a concise operator/developer manual: prerequisites, configuration, data layout, script reference, workflows, expected outputs, and troubleshooting.
-
-Prerequisites
--------------
-- Python 3.8+
-- Install minimal runtime dependencies used by scripts:
-
-```bash
+```powershell
+# Windows PowerShell (single line copy-paste)
 python -m pip install --upgrade pip
 python -m pip install pandas duckdb requests tqdm python-dateutil
 ```
 
-- Workspace: clone the repository and run commands from the repository root.
+2.3. R (for users who will inspect results or run parts in R)
 
-Configuration
--------------
-- `data_sources.json` — required for `download_data.py`. Contains private Box shared links. This file is excluded from Git; acquire it from the project owner and place it at the repository root.
-- `paths.py` — single source of truth for all file locations. Do not move or duplicate. Modify only when you want to change directory locations used by all scripts.
+Open R or RStudio and install required packages:
 
-Data layout (canonical)
------------------------
-- `DIME data/` — raw CSVs and generated per-year parquet directories `YYYY_parquet/`
-- `NIMSP data/` — `party_donor.parquet` and supporting files
-- `outputs/` — generated analysis CSVs named `{year}-analysis.csv`
-- `primarydates/`, `upperlower/` — auxiliary CSVs used in matching
-
-Quick operational commands
---------------------------
-Use these exact commands from the repo root (Windows PowerShell or POSIX shell):
-
-- Download medium/parquet files from Box (requires `data_sources.json`):
-
-```bash
-python download_data.py --year 2000 2002 2004      # download specific years
-python download_data.py --all                      # download all configured years
-python download_data.py --other                    # download NIMSP party_donor.parquet
-python download_data.py --overwrite --year 2000    # force re-download
+```r
+install.packages(c("arrow","duckdb","httr","readr","dplyr"))
+# Optional: reticulate to call Python directly from R
+install.packages("reticulate")
 ```
 
-- Convert raw DIME CSVs to Parquet (local conversion):
+3. Acquire repository and config (exact commands)
+------------------------------------------------
 
 ```bash
-python convert_year.py 2000 2002 2004              # generate year parquet dirs
-python convert_year.py 2000 --overwrite            # regenerate a single year
+- FileNotFoundError: confirm current working directory is repo root and `paths.py` exists.
+cd institutions
 ```
 
-- Run the main analysis pipeline (matching):
+Get `data_sources.json` from the project owner and place it in the repository root (same folder as `download_data.py`). This file contains private Box links required by `download_data.py`.
+
+4. Reproducible workflows — choose one (with R-friendly options)
+----------------------------------------------------------------
+
+Option A — Use Python scripts (recommended; exact commands):
 
 ```bash
-python cspy-match.py                                 # interactive: supply years
-python cspy-match2.py                                # alternate or batch mode
-```
+# 1) Download medium files that live on Box
+python download_data.py --all
+python download_data.py --other
 
-- Validate output:
+# 2) Run the analysis (interactive by default)
+python cspy-match.py
 
-```bash
+# 3) Validate one output
 python validate_output.py outputs/2000-analysis.csv
 ```
 
-Script reference (purpose and CLI)
-----------------------------------
-- `download_data.py` — downloads medium parquet assets and supporting files from Box. Requires `data_sources.json`.
-    - Flags: `--year`, `--all`, `--other`, `--overwrite`
+Why this path: uses the code as written, avoids reimplementing matching logic in R, and produces the canonical `outputs/` CSVs.
 
-- `convert_year.py` — converts DIME CSV years to DuckDB/parquet layout used by analysis. Idempotent unless `--overwrite`.
-    - Usage: `python convert_year.py <year> [<year> ...] [--overwrite]`
+Option B — Use R to drive the existing Python scripts (no Python coding required inside R)
 
-- `cspy-match.py` — primary analysis driver. Reads DIME parquet and `NIMSP data/party_donor.parquet`, writes `{year}-analysis.csv` in `outputs/`.
-    - Interactive by default; years may be provided via prompt or refactor for batch invocation.
+In R, use `system2()` or `reticulate` to execute the exact commands above. Example using `system2()`:
 
-- `cspy-match2.py` — variant/batch mode of matching; consult inline header comments for differences.
-
-- `extract_rows.py` — utility to sample rows from CSVs for quick inspection.
-
-- `validate_output.py` — lightweight validator for output schema and basic integrity checks.
-
-- `update_candidate_ids_2000.py`, `update_candidate_state_2000.py` — back-compat / fix-up utilities for legacy ID/state corrections.
-
-Typical workflows
------------------
-1) Fast path (recommended when parquet files are available):
-
-```bash
-python download_data.py --all
-python download_data.py --other
-python cspy-match.py
+```r
+# From the repo root in R
+system2("python", args = c("download_data.py", "--all"), stdout=TRUE)
+system2("python", args = c("download_data.py", "--other"), stdout=TRUE)
+system2("python", args = c("cspy-match.py"), stdout=TRUE)
 ```
 
-2) Recompute from raw CSVs (if you obtained raw DIME zips):
+Option C — Process DIME CSVs in R (if you cannot run Python)
 
-```bash
-# extract raw CSVs into `DIME data/`
-python convert_year.py 2000 2002 2004
-python cspy-match.py
+1) Place raw DIME CSVs into `DIME data/`.
+2) Convert CSV to Parquet in R and follow the pipeline's expected layout:
+
+```r
+library(arrow)
+library(readr)
+
+# read CSV and write parquet for year 2000 (example)
+df <- read_csv("DIME data/2000_candidate_donor.csv")
+write_parquet(df, "DIME data/2000_parquet/2000_candidate_donor.parquet")
 ```
 
-3) Minimal debug run for a single year:
+3) Copy or create `NIMSP data/party_donor.parquet` similarly so the Python `cspy-match.py` can read it, or port the matching logic to R (not recommended unless necessary).
+
+Notes: converting CSV→parquet in R is straightforward but the matching logic lives in `cspy-match.py`. For reproducible results prefer Option A or B.
+
+5. Inspecting outputs in R
+---------------------------
+Once the pipeline finishes, open outputs in R:
+
+```r
+library(readr)
+res <- read_csv("outputs/2000-analysis.csv")
+summary(res)
+head(res)
+```
+
+6. Quick troubleshooting (what to check, in order)
+------------------------------------------------
+- Confirm current working directory is the repository root and `paths.py` exists.
+- Confirm `data_sources.json` is present for `download_data.py` runs.
+- If `convert_year.py` fails, ensure the expected raw CSV is at `DIME data/<year>_candidate_donor.csv`.
+- If Python scripts fail with missing modules, run the Python install commands in section 2.2.
+- If outputs are empty, rerun for a single year with `--overwrite` and watch the logs:
 
 ```bash
 python convert_year.py 2000 --overwrite
-python cspy-match.py   # select 2000
+python cspy-match.py   # then select 2000
 ```
 
-Outputs and schema
-------------------
-Outputs are CSV files written to `outputs/{year}-analysis.csv`. Expected core columns:
+7. Short rationale notes (helpful context)
+----------------------------------------
+- Why Box links: keeps repository small and avoids distributing potentially sensitive data through Git.
+- Why `paths.py`: makes scripts portable across OSes and avoids hidden hardcoded paths.
+- Why prefer Python execution: the matching code is implemented and tested in Python; calling it from R (via `system2()` or `reticulate`) preserves behavior and reproducibility.
 
-- `candidate_id`, `candidate_name`, `state`, `year`, `party`, `seat_type`, `party_donors_count`, `total_party_donors`, `total_candidate_donors`, `percentage`, `match_method`
+8. Next actions I can take (pick one)
+-----------------------------------
+- Add a one-line wrapper R script that runs the canonical pipeline and then reads `outputs/` into R.
+- Produce `requirements.txt` and a short `install.sh` / `install.ps1` to install Python deps.
+- Add a non-interactive flag to `cspy-match.py` so it accepts `--years 2000,2002`.
 
-Operational notes and expectations
-----------------------------------
-- All scripts use `paths.py` — do not hardcode alternate paths inside scripts.
-- Parquet generation via `convert_year.py` uses DuckDB; ensure `duckdb` is installed.
-- Name-matching strategy: exact → token-subset → fuzzy; `match_method` indicates which branch succeeded.
-
-Troubleshooting (quick checks)
-------------------------------
-- FileNotFoundError: confirm current working directory is repo root and `paths.py` exists.
+If you want the R wrapper, I will add it now.
 - Missing `data_sources.json`: obtain from owner; without it `download_data.py` will fail.
 - Parquet not created: verify raw CSV exists in `DIME data/` and run `convert_year.py` with `--overwrite`.
 - Performance: increase available memory or run per-year to reduce memory footprint.
