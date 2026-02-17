@@ -67,8 +67,8 @@ NIMSP data/**/*.parquet
 outputs/
 !outputs/.gitkeep
 
-# data_sources.json is small metadata, include it in version control
-!data_sources.json
+# Private Box links config (DO NOT commit)
+data_sources.json
 
 # Debug files
 debug_output.txt

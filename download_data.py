@@ -6,8 +6,6 @@ Download DIME data files from Box cloud storage using shared links.
 Usage:
     python download_data.py --year 2000 2002 2004    # Download specific years
     python download_data.py --all                    # Download all configured files
-    python download_data.py --csv-only --year 2000   # Only download CSVs
-    python download_data.py --parquet-only --all     # Only download Parquets
     python download_data.py --overwrite --year 2000  # Re-download existing files
 """
 
@@ -25,7 +23,7 @@ except ImportError:
     print("   pip install requests tqdm")
     sys.exit(1)
 
-from paths import DIME_DATA_DIR, DIME_PARQUET_FILE, ensure_parquet_dir_exists
+from paths import DIME_PARQUET_FILE, ensure_parquet_dir_exists
 
 # Config file location
 CONFIG_FILE = Path(__file__).parent / "data_sources.json"
@@ -128,19 +126,6 @@ def download_file(url: str, dest_path: Path, overwrite: bool = False) -> bool:
         return False
 
 
-def download_csv(year: int, config: Dict, overwrite: bool) -> bool:
-    """Download DIME CSV file for a specific year"""
-    year_str = str(year)
-    if year_str not in config.get("dime_csv", {}):
-        print(f"❌ No CSV configured for year {year}")
-        return False
-    
-    url = config["dime_csv"][year_str]
-    dest = DIME_DATA_DIR(year)
-    
-    return download_file(url, dest, overwrite)
-
-
 def download_parquet(year: int, config: Dict, overwrite: bool) -> bool:
     """Download DIME Parquet file for a specific year"""
     year_str = str(year)
@@ -156,17 +141,11 @@ def download_parquet(year: int, config: Dict, overwrite: bool) -> bool:
 
 
 def download_other_files(config: Dict, overwrite: bool) -> None:
-    """Download NIMSP and other supporting files"""
-    # NIMSP party donor file
-    if "nimsp" in config and "party_donor" in config["nimsp"]:
-        url = config["nimsp"]["party_donor"]
-        dest = Path("NIMSP data") / "party_donor.csv"
-        download_file(url, dest, overwrite)
-    
-    # Primary dates file
-    if "primary_dates" in config and "legislative_primary_dates_full" in config["primary_dates"]:
-        url = config["primary_dates"]["legislative_primary_dates_full"]
-        dest = Path("primarydates") / "legislative_primary_dates_full.csv"
+    """Download supporting Parquet files"""
+    # NIMSP party donor parquet file
+    if "nimsp" in config and "party_donor_parquet" in config["nimsp"]:
+        url = config["nimsp"]["party_donor_parquet"]
+        dest = Path("NIMSP data") / "party_donor.parquet"
         download_file(url, dest, overwrite)
 
 
@@ -186,16 +165,6 @@ def main():
         help="Download all configured files"
     )
     parser.add_argument(
-        "--csv-only",
-        action="store_true",
-        help="Only download CSV files (not Parquet)"
-    )
-    parser.add_argument(
-        "--parquet-only",
-        action="store_true",
-        help="Only download Parquet files (not CSV)"
-    )
-    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Re-download files even if they exist locally"
@@ -203,7 +172,7 @@ def main():
     parser.add_argument(
         "--other",
         action="store_true",
-        help="Download supporting files (NIMSP, primary dates)"
+        help="Download supporting Parquet files"
     )
     
     args = parser.parse_args()
@@ -212,20 +181,15 @@ def main():
     if not args.year and not args.all and not args.other:
         parser.error("Specify --year, --all, or --other")
     
-    if args.csv_only and args.parquet_only:
-        parser.error("Cannot use both --csv-only and --parquet-only")
-    
     # Load configuration
     config = load_config()
     
     # Determine which years to download
     years: List[int] = []
     if args.all:
-        # Get all available years from config
-        csv_years = set(config.get("dime_csv", {}).keys())
+        # Get all available years from parquet config
         parquet_years = set(config.get("dime_parquet", {}).keys())
-        all_years = csv_years.union(parquet_years)
-        years = sorted([int(y) for y in all_years if y.isdigit()])
+        years = sorted([int(y) for y in parquet_years if y.isdigit()])
     elif args.year:
         years = args.year
     
@@ -240,18 +204,11 @@ def main():
     for year in years:
         print(f"\n📅 Year {year}")
         print(f"{'-'*60}")
-        
-        if not args.parquet_only:
-            if download_csv(year, config, args.overwrite):
-                success_count += 1
-            else:
-                fail_count += 1
-        
-        if not args.csv_only:
-            if download_parquet(year, config, args.overwrite):
-                success_count += 1
-            else:
-                fail_count += 1
+
+        if download_parquet(year, config, args.overwrite):
+            success_count += 1
+        else:
+            fail_count += 1
     
     # Download other supporting files if requested
     if args.other or args.all:

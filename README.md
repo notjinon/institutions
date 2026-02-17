@@ -4,25 +4,16 @@
 
 This project analyzes campaign finance data, matching state legislative candidates from DIME data against party donors from NIMSP data. The pipeline uses centralized path management (`paths.py`) to eliminate hardcoded paths and ensure portability.
 
-## Recent Improvements (Feb 2026)
-
-✅ **cspy-match.py completely rewritten** with intelligent name matching (68% → ~90% match rate)  
-✅ **Comprehensive election status mapping** (4 → 19+ outcome codes)  
-✅ **One-pass processing** - no more retcon scripts needed  
-✅ **Parquet converter** handles unicode errors and type inference issues  
-
-See [FIXES_IMPLEMENTED.md](FIXES_IMPLEMENTED.md) for detailed technical documentation.
-
 ## Data Management & Version Control
 
-This project separates **code** (tracked in Git) from **data** (stored in Box cloud storage).
+This project uses a size-based storage policy for data and code.
 
-### Why This Setup?
+### Storage Policy
 
-- **CSV/Parquet files are too large for Git** (hundreds of MB each)
-- **Code is version-controlled** - easy to collaborate and track changes
-- **Data is centralized in Box** - single source of truth, accessible to team
-- **Local analysis** - download once, work offline
+- **Small CSVs** → kept in **Git**
+- **Medium Parquet files** → kept in **Box** (downloaded via `download_data.py`)
+- **Large raw CSVs (uncompressed Parquet-scale)** → **not in Git or Box**; source from Stanford DIME: [https://data.stanford.edu/dime](https://data.stanford.edu/dime)
+- **Code and scripts** → kept in **Git**
 
 ### Quick Setup
 
@@ -36,19 +27,21 @@ cd institutions
 # Install dependencies
 pip install requests tqdm duckdb pandas
 
-# Configure Box download links
-# Edit data_sources.json and add your Box shared links
+# Get private Box links config from repository owner
+# Place data_sources.json in the project root (same folder as download_data.py)
 ```
 
-#### 2. Upload Data to Box (One-Time)
+`data_sources.json` is required to download source files and is intentionally not committed to Git. Get this file from the project owner and place it in the working directory before running `download_data.py`.
 
-1. Go to [box.com](https://box.com) and upload your CSV/Parquet files
+#### 2. Upload Medium Parquet Data to Box (One-Time)
+
+1. Go to [box.com](https://box.com) and upload your Parquet files
 2. For each file, right-click → **Share** → **Create Shared Link**
 3. Set permissions to "People with the link can **download**"
 4. Copy the shared link (format: `https://app.box.com/s/xxxxx`)
 5. Paste links into `data_sources.json`
 
-#### 3. Download Data Files
+#### 3. Download Parquet Data Files
 
 ```bash
 # Download specific years
@@ -57,10 +50,7 @@ python download_data.py --year 2000 2002 2004
 # Download everything
 python download_data.py --all
 
-# Download only CSVs (then generate Parquet locally)
-python download_data.py --csv-only --all
-
-# Download supporting files (NIMSP, primary dates)
+# Download supporting parquet files
 python download_data.py --other
 
 # Re-download existing files
@@ -69,15 +59,16 @@ python download_data.py --overwrite --year 2000
 
 ### Workflow
 
-**Option A: Download pre-made Parquet files** (fastest)
+**Option A: Download pre-made Parquet files** (default, fastest)
 ```bash
 python download_data.py --all
 python cspy-match.py
 ```
 
-**Option B: Download CSVs, generate Parquet locally**
+**Option B: Download large raw CSV zip from Stanford DIME, generate Parquet locally**
 ```bash
-python download_data.py --csv-only --all
+# Source: https://data.stanford.edu/dime
+# Download CSV zip and extract into DIME data/
 python convert_year.py 2000 2002 2004
 python cspy-match.py
 ```
@@ -93,11 +84,12 @@ python cspy-match.py
 
 ✅ **Tracked:**
 - All Python scripts (`*.py`)
-- Configuration files (`data_sources.json`, `paths.py`)
+- Configuration files (`paths.py`)
 - Documentation (`README.md`, `*.md`)
 - Directory structure markers
 
 ❌ **Not Tracked (in `.gitignore`):**
+- `data_sources.json` (private Box links; request from project owner)
 - CSV files (`DIME data/**/*.csv`)
 - Parquet files (`DIME data/**/*.parquet`)
 - Analysis outputs (`outputs/`)
@@ -112,16 +104,11 @@ git commit -m "Improved name matching algorithm"
 git push
 ```
 
-**To share new data:**
-1. Upload CSV/Parquet to Box
+**To share new medium parquet data:**
+1. Upload Parquet to Box
 2. Get shared link
-3. Update `data_sources.json`
-4. Commit the config change:
-```bash
-git add data_sources.json
-git commit -m "Added 2026 data links"
-git push
-```
+3. Update your local `data_sources.json`
+4. Send updated `data_sources.json` to teammates through a private channel
 
 **To share analysis results:**
 - Small files (<10MB): Can commit to `outputs/` (update `.gitignore`)
