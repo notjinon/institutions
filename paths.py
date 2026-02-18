@@ -23,7 +23,9 @@ def get_data_path(relative_path: str) -> Path:
 
 
 # Data file paths
-DIME_DATA_DIR = lambda year: get_data_path(f"DIME data/{year}_candidate_donor.csv")
+# Exception: only raw DIME CSV inputs live outside the repo.
+DIME_CSV_BASE = Path(r"D:\projects\institutions csv storage")
+DIME_DATA_DIR = lambda year: DIME_CSV_BASE / f"{year}_candidate_donor.csv"
 DIME_PARQUET_DIR = lambda year: get_data_path(f"DIME data/{year}_parquet")
 DIME_PARQUET_FILE = lambda year: DIME_PARQUET_DIR(year) / f"{year}_candidate_donor.parquet"
 
