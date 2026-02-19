@@ -1,63 +1,91 @@
 #!/usr/bin/env python3
 """
-cspy-match3.py
-Builds on cspy-match2.py with the following fixes:
+cspy-match3.py  —  INVERTED / NIMSP-FIRST REWRITE
+===================================================
 
-  Fix 1 — Party code collapse (2018–2022):
-    The 'recipient.party' field is NULL for ~99% of state-leg candidates in
-    2020/2022 parquets. The old '100'/'200' filter silently discarded almost
-    all of them. Now loads ALL state-leg CAND records (any party code or NULL)
-    and lets NIMSP reference matching determine party.
+WHY THE OLD APPROACH FAILED
+----------------------------
+All previous versions (v1–v2 and earlier v3 fixes) relied on DIME's internal
+`seat` column to identify state-leg candidates:
 
-  Fix 2 — Combo extraction now catches NULL-party years:
-    extract_unique_combos_parquet no longer filters by party code. It emits
-    both DEM and REP combos for every (state, year) that has state-leg CAND
-    records, regardless of party code population.
+    WHERE seat IN ('state:upper', 'state:lower')
 
-  Fix 3 — Opposite-party skip no longer silently deletes candidates:
-    When a candidate fails their own-party match but fuzzy-matches the
-    opposite party reference, the old code did a silent `continue`, which
-    caused legitimate candidates to vanish from output. Now logs the event
-    and marks the record as match_method='cross_party_conflict' so it's
-    visible in the output and in fallback_analysis.py.
+Starting around 2018, DIME largely stopped populating this column. By 2020,
+the vast majority of state-leg transactions have seat = NULL. The old pipeline
+therefore silently discarded millions of valid records — this is why high-
+profile candidates like James Talarico appeared in the raw parquet but were
+absent from the final output.
 
-  Fix 4 — dime_last extraction now uses extract_last_name():
-    The old code set dime_last = dime_name_norm.split()[0], which works for
-    "LAST FIRST" names but returns the first name for "FIRST LAST" names.
-    Now passes dime_last_norm (computed via extract_last_name on the raw name)
-    explicitly into match_candidate_name().
+THE NEW "INVERTED" STRATEGY
+----------------------------
+NIMSP is treated as the authoritative source of truth for state-leg candidates.
+The matching logic now operates in three phases:
 
-  Fix 5 — token_subset false positives tightened:
-    The old subset check fired even for 1-token names like "SMITH", which
-    happily subset-matched any "SMITH JOHN". Now requires the shorter side
-    has >= 2 tokens AND the candidate's last name appears in the intersection.
+  Phase 1 — Ingest Without Filters:
+    Load ALL CAND-type DIME records for a given state/year with NO seat and
+    NO party-code filter. Every transaction is preserved regardless of how
+    DIME labelled (or failed to label) the recipient.
 
-  Fix 6 — Pre-run parquet summary:
-    Before processing each year, logs total rows, state-leg rows, party code
-    breakdown, and unique combos found. Immediately surfaces data coverage
-    issues instead of silently producing tiny outputs.
+  Phase 2 — NIMSP-First Matching:
+    Build a master candidate universe from the upperlower CSV files (the NIMSP
+    Candidate Master List). For each NIMSP candidate, search the unfiltered
+    DIME pool by composite key of Name + State + Year using the multi-tier
+    fuzzy matching engine. This is the inverse of the old direction.
+
+  Phase 3 — Retroactive Imputation:
+    Any DIME bonica.rid that matches a known NIMSP candidate is retroactively
+    labelled as a state donation. Party, house, district, and election status
+    are all imputed from the NIMSP record. NULL seat and NULL party columns in
+    DIME are no longer a disqualifier — they are irrelevant.
+
+KEY STRUCTURAL CHANGES vs OLD VERSION
+---------------------------------------
+  • extract_unique_combos_parquet() REMOVED — it queried DIME's broken seat
+    column to discover which states to process. Replaced by reading the list
+    of states directly from the NIMSP upperlower CSV universe.
+
+  • load_candidate_data_parquet() REPLACED by load_all_dime_cand_records() —
+    the new function omits the `seat` and `recipient.party` filters entirely.
+
+  • analyze_candidate_party_overlap_efficient() REPLACED by
+    run_nimsp_first_analysis() — loop now iterates over NIMSP candidates and
+    searches for them in DIME, not the other direction.
+
+  • cross_party_conflict logic REMOVED — because NIMSP definitively assigns
+    party, there is no ambiguity about which party a candidate belongs to.
+
+  • log_parquet_summary() UPDATED — no longer reports state-leg rows by seat
+    column; reports CAND-type totals and unique state coverage instead.
 
 Usage:
     python cspy-match3.py
-    # Enter years when prompted: 2012, 2014, 2020
+    # Enter years when prompted: 2018, 2020, 2022
 """
 
 import pandas as pd
 import re
+import sys
+import importlib.util
 import duckdb
 import time
 from difflib import SequenceMatcher
 from pathlib import Path
-from utils.paths import (
-    DIME_PARQUET_FILE,
-    NIMSP_PARTY_DATA,
-    NIMSP_PARTY_DATA_PARQUET,
-    PRIMARY_DATES_FILE,
-    UPPER_HOUSE_FILE,
-    LOWER_HOUSE_FILE,
-    OUTPUT_FILE,
-    ensure_output_dir_exists,
-)
+
+# Load utils.paths directly by file path (avoids import system issues)
+workspace_root = Path(__file__).parent.parent
+paths_module_path = workspace_root / "utils" / "paths.py"
+spec = importlib.util.spec_from_file_location("utils.paths", paths_module_path)
+paths = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(paths)
+
+DIME_PARQUET_FILE = paths.DIME_PARQUET_FILE
+NIMSP_PARTY_DATA = paths.NIMSP_PARTY_DATA
+NIMSP_PARTY_DATA_PARQUET = paths.NIMSP_PARTY_DATA_PARQUET
+PRIMARY_DATES_FILE = paths.PRIMARY_DATES_FILE
+UPPER_HOUSE_FILE = paths.UPPER_HOUSE_FILE
+LOWER_HOUSE_FILE = paths.LOWER_HOUSE_FILE
+OUTPUT_FILE = paths.OUTPUT_FILE
+ensure_output_dir_exists = paths.ensure_output_dir_exists
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -323,147 +351,310 @@ def load_district_reference(year, upper_path=None, lower_path=None):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Fix 6: pre-run parquet summary
+# Pre-run parquet summary (INVERTED version — no seat column required)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def log_parquet_summary(parquet_file, year):
     """
-    Query the parquet and print a data-coverage summary before processing.
-    Surfaces the party-code collapse issue immediately.
+    Print a data-coverage summary of the full parquet file before processing.
+
+    The old version filtered by seat IN ('state:upper','state:lower') to count
+    state-leg rows — that filter is exactly what broke 2018+ data. The new
+    version reports CAND-type rows across all seat values and shows the seat
+    NULL rate, making the metadata collapse immediately visible.
     """
     f = str(parquet_file)
-    print(f"\n  {'─'*56}")
-    print(f"  PARQUET SUMMARY  ({year})")
-    print(f"  {'─'*56}")
+    print(f"\n  {'─'*60}")
+    print(f"  PARQUET SUMMARY  ({year})  [NIMSP-FIRST MODE]")
+    print(f"  {'─'*60}")
     con = duckdb.connect()
     try:
         total = con.execute("SELECT COUNT(*) FROM read_parquet(?)", [f]).fetchone()[0]
 
-        sl_total = con.execute(
+        cand_rows = con.execute(
             "SELECT COUNT(*) FROM read_parquet(?)"
-            " WHERE seat IN ('state:upper','state:lower') AND \"recipient.type\"='CAND'",
+            " WHERE \"recipient.type\" = 'CAND'",
             [f]
         ).fetchone()[0]
 
-        party_breakdown = con.execute(
-            "SELECT \"recipient.party\", COUNT(*) as n FROM read_parquet(?)"
-            " WHERE seat IN ('state:upper','state:lower') AND \"recipient.type\"='CAND'"
-            " GROUP BY \"recipient.party\" ORDER BY n DESC LIMIT 8",
+        # Show how many CAND rows have a populated seat vs NULL — this surfaces
+        # the extent of the metadata collapse that broke earlier versions.
+        seat_breakdown = con.execute(
+            "SELECT"
+            "  COALESCE(seat, '<NULL>') AS seat_val,"
+            "  COUNT(*) AS n"
+            " FROM read_parquet(?)"
+            " WHERE \"recipient.type\" = 'CAND'"
+            " GROUP BY seat_val ORDER BY n DESC LIMIT 10",
             [f]
         ).df()
 
-        unique_combos_all = con.execute(
-            "SELECT COUNT(*) FROM ("
-            "  SELECT DISTINCT \"recipient.state\", cycle FROM read_parquet(?)"
-            "  WHERE seat IN ('state:upper','state:lower') AND \"recipient.type\"='CAND'"
-            "  AND \"recipient.state\" IS NOT NULL AND cycle IS NOT NULL"
-            ")",
-            [f]
+        unique_states = con.execute(
+            "SELECT COUNT(DISTINCT \"recipient.state\") FROM read_parquet(?)"
+            " WHERE \"recipient.type\" = 'CAND'"
+            "   AND cycle = ? AND \"recipient.state\" IS NOT NULL",
+            [f, year]
         ).fetchone()[0]
 
-        print(f"  Total rows in parquet  : {total:>12,}")
-        print(f"  State-leg CAND rows    : {sl_total:>12,}")
-        pct = sl_total / total * 100 if total else 0
-        print(f"  State-leg share        : {pct:>11.2f}%")
-        print(f"  Unique (state, year) combos (all parties): {unique_combos_all}")
-        print(f"\n  recipient.party breakdown in state-leg CAND rows:")
-        for _, row in party_breakdown.iterrows():
-            pcode = str(row['recipient.party'])
-            label = {'100': 'DEM', '200': 'REP', 'nan': 'NULL'}.get(pcode, pcode)
-            bar_n = int(row['n'] / max(sl_total, 1) * 30)
-            print(f"    {label:>6} ({pcode:>3})  {int(row['n']):>9,}  {'█' * bar_n}")
+        party_null_rate = con.execute(
+            "SELECT"
+            "  ROUND(100.0 * SUM(CASE WHEN \"recipient.party\" IS NULL THEN 1 ELSE 0 END)"
+            "        / COUNT(*), 2) AS null_pct"
+            " FROM read_parquet(?)"
+            " WHERE \"recipient.type\" = 'CAND' AND cycle = ?",
+            [f, year]
+        ).fetchone()[0]
+
+        print(f"  Total rows in parquet       : {total:>12,}")
+        print(f"  CAND-type rows (all seats)  : {cand_rows:>12,}")
+        print(f"  Unique states (cycle={year}): {unique_states:>12,}")
+        print(f"  recipient.party NULL rate   : {party_null_rate:>11.2f}%")
+        print(f"  (High NULL% confirms metadata collapse — NIMSP-first strategy needed)")
+        print(f"\n  `seat` value breakdown for CAND rows (top 10):")
+        for _, row in seat_breakdown.iterrows():
+            bar_n = int(row['n'] / max(cand_rows, 1) * 30)
+            print(f"    {str(row['seat_val']):<25}  {int(row['n']):>10,}  {'█' * bar_n}")
     except Exception as e:
         print(f"  WARNING: could not generate parquet summary: {e}")
     finally:
         con.close()
-    print(f"  {'─'*56}")
+    print(f"  {'─'*60}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Fix 1 + Fix 2: candidate data loading — accept NULL party codes
+# Phase 1: Ingest Without Filters — load ALL DIME CAND records
 # ─────────────────────────────────────────────────────────────────────────────
 
-def load_candidate_data_parquet(parquet_file, state, party, year, primary_date=None):
+def load_all_dime_cand_records(parquet_file, state, year, primary_date=None):
     """
-    Load state-leg CAND records from Parquet for a given state/party/year.
+    Load ALL CAND-type DIME records for a given state/year with NO seat filter
+    and NO recipient.party filter.
 
-    Fix 1: accepts rows where 'recipient.party' is the expected code (100/200)
-    OR is NULL. In 2020+ parquets, ~99% of state-leg rows have NULL party;
-    the old strict equality filter discarded them entirely. NIMSP reference
-    matching determines the true party for NULL-code candidates.
+    This replaces load_candidate_data_parquet(). The old function contained:
+        AND seat IN ('state:upper', 'state:lower')
+        AND ("recipient.party" = '100' OR "recipient.party" IS NULL)
 
-    Both DEM and REP runs load their explicit party code + NULLs. A NULL
-    candidate that genuinely belongs to the other party will be caught by
-    the cross-party check (Fix 3) and labeled accordingly.
+    Both of those filters are now gone. A federal senator, a state senator,
+    and a candidate with a NULL seat column all land in the same result set.
+    NIMSP matching (Phase 2) decides which ones are state-leg candidates.
+    We retain the primary-date cutoff because that is a temporal validity
+    constraint, not a metadata-quality assumption.
     """
-    party_code = '100' if party == 'DEM' else '200'
     f = str(parquet_file)
-
     date_clause = ""
     if primary_date is not None:
         primary_str = primary_date.strftime('%Y-%m-%d')
         date_clause = f" AND TRY_CAST(date AS DATE) < DATE '{primary_str}'"
 
-    # Accept explicit party code OR NULL (Fix 1)
     sql = (
         f"SELECT * FROM read_parquet('{f}')"
         f" WHERE cycle = {year}"
         f"   AND \"recipient.state\" = '{state}'"
-        f"   AND (\"recipient.party\" = '{party_code}' OR \"recipient.party\" IS NULL)"
-        f"   AND seat IN ('state:upper', 'state:lower')"
         f"   AND \"recipient.type\" = 'CAND'"
         f"{date_clause}"
     )
     con = duckdb.connect()
     try:
         df = con.execute(sql).df()
-        null_count = df['recipient.party'].isna().sum()
-        print(f"  Loaded {len(df)} candidate records  "
-              f"(explicit party={party_code}: {len(df)-null_count}, NULL party: {null_count})")
+        seat_null = df['seat'].isna().sum() if 'seat' in df.columns else 0
+        party_null = df['recipient.party'].isna().sum() if 'recipient.party' in df.columns else 0
+        print(f"  Loaded {len(df):,} CAND records (all seats)  "
+              f"[seat NULL: {seat_null:,}, party NULL: {party_null:,}]")
         return df
     finally:
         con.close()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Fix 2: combo extraction — no party filter, emit both DEM+REP per state/year
-# ─────────────────────────────────────────────────────────────────────────────
-
-def extract_unique_combos_parquet(parquet_file):
+def build_dime_candidate_list(dime_df):
     """
-    Extract all (state, party, year) combos to process.
+    Build a flat list of unique DIME candidate dicts from the unfiltered pool.
 
-    Fix 2: no longer filters by 'recipient.party'. Gets every (state, year)
-    that has any state-leg CAND records, then emits both DEM and REP for each.
-    This captures years/states where party codes are predominantly NULL, which
-    would otherwise return zero combos under the old '100'/'200' filter.
+    Each dict has the keys expected by match_candidate_name():
+        name_norm  — normalize_name() of recipient.name
+        last_norm  — extract_last_name() of recipient.name
+    Plus extra fields used after a successful match:
+        raw_name   — original recipient.name string
+        bonica_rid — bonica.rid value (used to retrieve transactions)
+
+    This list is the search space for Phase 2 NIMSP-first matching.
     """
-    f = str(parquet_file)
-    print("  Extracting unique state/year combinations from Parquet...")
+    candidates = []
+    seen_rids = set()
+    for rid in dime_df['bonica.rid'].unique():
+        if rid in seen_rids:
+            continue
+        seen_rids.add(rid)
+        rows = dime_df[dime_df['bonica.rid'] == rid]
+        name = rows['recipient.name'].iloc[0] if not rows.empty else ''
+        candidates.append({
+            'name_norm': normalize_name(name),
+            'last_norm': extract_last_name(name),
+            'raw_name':  name,
+            'bonica_rid': rid,
+        })
+    return candidates
 
-    sql = (
-        "SELECT DISTINCT \"recipient.state\" AS state, cycle AS year"
-        f" FROM read_parquet('{f}')"
-        " WHERE seat IN ('state:upper', 'state:lower')"
-        "   AND \"recipient.type\" = 'CAND'"
-        "   AND \"recipient.state\" IS NOT NULL"
-        "   AND cycle IS NOT NULL"
-        " ORDER BY year, state"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 2 + 3: NIMSP-First Matching & Retroactive Imputation
+# ─────────────────────────────────────────────────────────────────────────────
+
+def run_nimsp_first_analysis(state, year, nimsp_universe, dime_df, dem_donors, rep_donors):
+    """
+    Core NIMSP-first analysis for a single (state, year).
+
+    Inverted matching logic
+    -----------------------
+    OLD: iterate over DIME bonica.rids → search NIMSP reference lists
+    NEW: iterate over NIMSP candidates   → search DIME candidate pool
+
+    A DIME bonica.rid that is found via NIMSP matching is retroactively
+    labelled as a state donation. Its party, house, district, and
+    election status are all imputed from the NIMSP record — DIME's NULL
+    `seat` and NULL `recipient.party` columns are completely bypassed.
+
+    Parameters
+    ----------
+    state          : two-letter state abbreviation
+    year           : election cycle year
+    nimsp_universe : dict from load_district_reference()
+                     {(state, party, house): [ref_candidate_dicts]}
+    dime_df        : unfiltered DIME CAND records for this state/year
+    dem_donors     : NIMSP party donor DF for DEM
+    rep_donors     : NIMSP party donor DF for REP
+
+    Returns
+    -------
+    (results_df, unmatched_nimsp_list)
+        results_df          — one row per successfully matched candidate
+        unmatched_nimsp_list — NIMSP candidates for which no DIME record found
+    """
+    print(f"\n  NIMSP-first analysis: {state}-{year}")
+
+    if dime_df.empty:
+        print("    No DIME CAND records found — skipping.")
+        return pd.DataFrame(), []
+
+    dime_candidate_list = build_dime_candidate_list(dime_df)
+    print(f"    DIME candidate pool (unfiltered): {len(dime_candidate_list):,}")
+
+    # ── Pre-build donor name sets ──────────────────────────────────────────
+    def _make_donor_set(df):
+        if df is None or df.empty:
+            return set()
+        tmp = df.copy()
+        tmp['_c'] = tmp['Name'].str.upper().str.strip()
+        return set(tmp['_c'].dropna())
+
+    dem_donor_names = _make_donor_set(dem_donors)
+    rep_donor_names = _make_donor_set(rep_donors)
+    print(f"    DEM party donor pool: {len(dem_donor_names):,}")
+    print(f"    REP party donor pool: {len(rep_donor_names):,}")
+
+    results        = []
+    unmatched_nimsp = []
+    used_rids       = set()   # guard against double-counting same bonica.rid
+
+    # ── Iterate over NIMSP candidates ─────────────────────────────────────
+    for (key_state, party, house), ref_list in nimsp_universe.items():
+        if key_state != state:
+            continue
+
+        party_donor_names = dem_donor_names if party == 'DEM' else rep_donor_names
+        opp_donor_names   = rep_donor_names if party == 'DEM' else dem_donor_names
+        total_party_donors = len(party_donor_names)
+
+        for nimsp_ref in ref_list:
+            # ── Phase 2: match this NIMSP candidate against the DIME pool ──
+            # match_candidate_name() is direction-agnostic; we pass the NIMSP
+            # candidate's name as the "query" and the DIME pool as the ref list.
+            matched_dime, method = match_candidate_name(
+                nimsp_ref['name_norm'],
+                nimsp_ref['last_norm'],
+                dime_candidate_list,
+            )
+
+            if matched_dime is None:
+                unmatched_nimsp.append({
+                    'nimsp_name': nimsp_ref['name_norm'],
+                    'state': state,
+                    'party': party,
+                    'house': house,
+                    'year':  year,
+                })
+                continue
+
+            rid = matched_dime['bonica_rid']
+
+            # Warn if the same DIME bonica.rid would be double-counted
+            if rid in used_rids:
+                print(f"    [WARN] bonica.rid {rid} ({matched_dime['raw_name']}) "
+                      f"already matched by a previous NIMSP candidate — skipping duplicate.")
+                continue
+            used_rids.add(rid)
+
+            # ── Phase 3: retroactive imputation ────────────────────────────
+            cand_rows = dime_df[dime_df['bonica.rid'] == rid]
+            cand_name = matched_dime['raw_name']
+
+            # Party, house, district, election status all come from NIMSP —
+            # DIME's NULL seat and NULL party columns are ignored entirely.
+            district        = nimsp_ref['district']
+            candidate_index = nimsp_ref['candidate_index']
+            candidate_state = nimsp_ref.get('candidate_state')
+            seat_type       = 'state:upper' if house == 'U' else 'state:lower'
+            candidate_id    = f"{state}-{party}-{year}-{house}-{district}-{candidate_index}"
+
+            # ── Donor overlap ──────────────────────────────────────────────
+            cand_copy = cand_rows.copy()
+            cand_copy['_c'] = cand_copy['contributor.name'].str.upper().str.strip()
+            candidate_donors        = set(cand_copy['_c'].dropna())
+            total_candidate_donors  = cand_rows['bonica.cid'].nunique()
+            party_donors_count      = len(candidate_donors & party_donor_names)
+            cross_partisan_count    = len(candidate_donors & opp_donor_names)
+            percentage = (party_donors_count / total_party_donors * 100) if total_party_donors > 0 else 0
+
+            results.append({
+                'candidate_id':             candidate_id,
+                'candidate_name':           cand_name,
+                'nimsp_name':               nimsp_ref['name_norm'],
+                'party_donors_count':       party_donors_count,
+                'total_party_donors':       total_party_donors,
+                'total_candidate_donors':   total_candidate_donors,
+                'cross_partisan_donations': cross_partisan_count,
+                'percentage':               round(percentage, 2),
+                'seat_info':                f"{house}-{district}",
+                'seat_type':                seat_type,
+                'candidate_state':          candidate_state,
+                'match_method':             method,
+                'in_NIMSP':                 True,
+                'state':                    state,
+                'party':                    party,
+                'year':                     year,
+            })
+
+    # ── Diagnostic counts ──────────────────────────────────────────────────
+    all_rids = {c['bonica_rid'] for c in dime_candidate_list}
+    orphan_count = len(all_rids - used_rids)
+    nimsp_total  = sum(
+        len(rlist)
+        for (s, p, h), rlist in nimsp_universe.items()
+        if s == state
     )
-    con = duckdb.connect()
-    try:
-        df = con.execute(sql).df()
-    finally:
-        con.close()
 
-    # Emit both parties for every (state, year) found
-    combos = []
-    for _, row in df.iterrows():
-        combos.append((row['state'], 'DEM', int(row['year'])))
-        combos.append((row['state'], 'REP', int(row['year'])))
+    print(f"    NIMSP candidates for {state}          : {nimsp_total:,}")
+    print(f"    Matched (NIMSP→DIME)                   : {len(results):,}")
+    print(f"    NIMSP unmatched (no DIME record)       : {len(unmatched_nimsp):,}")
+    print(f"    DIME orphans (federal/other, discarded): {orphan_count:,}")
 
-    print(f"  Found {len(df)} unique (state, year) pairs → {len(combos)} combos (DEM+REP)")
-    return combos
+    out_df = pd.DataFrame(results) if results else pd.DataFrame(columns=[
+        'candidate_id', 'candidate_name', 'nimsp_name',
+        'party_donors_count', 'total_party_donors', 'total_candidate_donors',
+        'cross_partisan_donations', 'percentage',
+        'seat_info', 'seat_type', 'candidate_state',
+        'match_method', 'in_NIMSP', 'state', 'party', 'year',
+    ])
+    return out_df, unmatched_nimsp
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -524,234 +715,78 @@ def load_party_data_smart(state, party, year, primary_date=None):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Core analysis — Fix 3 (cross-party logging), Fix 4 (dime_last_norm)
-# ─────────────────────────────────────────────────────────────────────────────
-
-def analyze_candidate_party_overlap_efficient(
-    candidate_df, party_df, state, party, year,
-    district_ref=None, opposite_party_df=None,
-):
-    """
-    Match candidates to NIMSP reference, compute party-donor overlap, and
-    count cross-partisan donations.
-
-    Returns (results_df, unmatched_list).
-
-    Changes from v2
-    ---------------
-    Fix 3: candidates that fail own-party match but fuzzy-match the opposite
-      party reference are no longer silently dropped. They are kept in results
-      with match_method='cross_party_conflict' and in_NIMSP=False, and a
-      warning is printed. They are excluded from the unmatched list because
-      they're not truly unmatched — they just belong to the other party's run.
-
-    Fix 4: extract_last_name() is called on the raw candidate_name to obtain
-      dime_last_norm, which is passed explicitly into match_candidate_name().
-      This correctly handles 'FIRST LAST' formatted names where split()[0]
-      would have returned the first name instead of the last.
-    """
-    print(f"\n  Analyzing {state}-{party}-{year}:")
-    print(f"    Candidates : {len(candidate_df)}")
-    print(f"    Party donors: {len(party_df)}")
-
-    if len(candidate_df) == 0:
-        print("    No candidates found — skipping.")
-        return pd.DataFrame(), []
-    if len(party_df) == 0:
-        print("    No party donors found — skipping.")
-        return pd.DataFrame(), []
-
-    # Pre-process party donor name sets
-    party_df = party_df.copy()
-    party_df['donor_name_clean'] = party_df['Name'].str.upper().str.strip()
-    unique_party_donors = set(party_df['donor_name_clean'].dropna())
-    total_party_donors  = len(unique_party_donors)
-
-    unique_opposite_donors = set()
-    if opposite_party_df is not None and len(opposite_party_df) > 0:
-        opp = opposite_party_df.copy()
-        opp['donor_name_clean'] = opp['Name'].str.upper().str.strip()
-        unique_opposite_donors = set(opp['donor_name_clean'].dropna())
-        print(f"    Opposite-party donors: {len(unique_opposite_donors)}")
-
-    opposite_party = 'REP' if party == 'DEM' else 'DEM'
-    results   = []
-    unmatched = []
-    cross_party_skips = 0
-
-    for candidate_rid in candidate_df['bonica.rid'].unique():
-        cand_rows   = candidate_df[candidate_df['bonica.rid'] == candidate_rid]
-        cand_name   = cand_rows['recipient.name'].iloc[0] if not cand_rows.empty else 'Unknown'
-        seat_type   = cand_rows['seat'].iloc[0] if not cand_rows.empty else 'Unknown'
-
-        house    = 'U' if seat_type == 'state:upper' else ('L' if seat_type == 'state:lower' else 'X')
-        district = 'AL' if house == 'U' else ('01' if house == 'L' else '00')
-
-        # Fix 4: compute last name from raw name before normalization
-        name_norm      = normalize_name(cand_name)
-        dime_last_norm = extract_last_name(cand_name)
-
-        candidate_index = None
-        candidate_state = None
-        match_method    = "fallback"
-        in_nimsp        = False
-        is_cross_party  = False
-
-        if district_ref:
-            # Try own party first
-            ref_list = district_ref.get((state, party, house), [])
-            if ref_list:
-                matched_ref, method = match_candidate_name(name_norm, dime_last_norm, ref_list)
-                if matched_ref:
-                    district        = matched_ref["district"]
-                    candidate_index = matched_ref["candidate_index"]
-                    candidate_state = matched_ref.get("candidate_state")
-                    match_method    = method
-                    in_nimsp        = True
-
-            # Fix 3: if unmatched, check opposite party — but don't silently drop
-            if not in_nimsp:
-                opp_ref_list = district_ref.get((state, opposite_party, house), [])
-                if opp_ref_list:
-                    opp_matched, _ = match_candidate_name(name_norm, dime_last_norm, opp_ref_list)
-                    if opp_matched:
-                        # Candidate belongs to the other party's run; mark and skip
-                        # output — they will appear correctly in the opposite run.
-                        print(f"    [CROSS-PARTY] {cand_name} matched {opposite_party} ref "
-                              f"during {party} run — will be recorded in {opposite_party} output")
-                        match_method   = "cross_party_conflict"
-                        is_cross_party = True
-                        cross_party_skips += 1
-
-        # Skip cross-party conflicts from this party's output to avoid duplicates
-        if is_cross_party:
-            continue
-
-        # Donor overlap
-        total_candidate_donors = cand_rows['bonica.cid'].nunique()
-        cand_copy = cand_rows.copy()
-        cand_copy['donor_name_clean'] = cand_copy['contributor.name'].str.upper().str.strip()
-        candidate_donors = set(cand_copy['donor_name_clean'].dropna())
-
-        party_donors_count    = len(candidate_donors & unique_party_donors)
-        cross_partisan_count  = len(candidate_donors & unique_opposite_donors)
-        percentage = (party_donors_count / total_party_donors * 100) if total_party_donors > 0 else 0
-
-        if candidate_index is None:
-            n = sum(1 for r in results if r['seat_info'] == f"{house}-{district}")
-            candidate_index = f"{n+1:02d}"
-        candidate_id = f"{state}-{party}-{year}-{house}-{district}-{candidate_index}"
-
-        results.append({
-            'candidate_id':           candidate_id,
-            'candidate_name':         cand_name,
-            'party_donors_count':     party_donors_count,
-            'total_party_donors':     total_party_donors,
-            'total_candidate_donors': total_candidate_donors,
-            'cross_partisan_donations': cross_partisan_count,
-            'percentage':             round(percentage, 2),
-            'seat_info':              f"{house}-{district}",
-            'seat_type':              seat_type,
-            'candidate_state':        candidate_state,
-            'match_method':           match_method,
-            'in_NIMSP':               in_nimsp,
-        })
-
-        if not in_nimsp:
-            unmatched.append({
-                'candidate_name': cand_name,
-                'house': house,
-                'state': state,
-                'party': party,
-                'year':  year,
-            })
-
-    if cross_party_skips:
-        print(f"    Cross-party conflicts skipped (will appear in {opposite_party} run): {cross_party_skips}")
-
-    return pd.DataFrame(results), unmatched
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Per-combo runner (unchanged logic, updated call signatures)
-# ─────────────────────────────────────────────────────────────────────────────
-
-def run_analysis_for_combo(parquet_file, state, party, year, primary_date=None, district_ref=None):
-    """Run analysis for a single (state, party, year). Returns (results_df, unmatched_list)."""
-    date_info = f" before {primary_date.strftime('%m/%d/%Y')}" if primary_date else ""
-    print(f"\n=== {state}-{party}-{year}{date_info} ===")
-
-    candidate_df     = load_candidate_data_parquet(parquet_file, state, party, year, primary_date)
-    party_df         = load_party_data_smart(state, party, year, primary_date)
-    opposite_party   = 'REP' if party == 'DEM' else 'DEM'
-    opposite_party_df = load_party_data_smart(state, opposite_party, year, primary_date)
-
-    results, unmatched = analyze_candidate_party_overlap_efficient(
-        candidate_df, party_df, state, party, year, district_ref, opposite_party_df,
-    )
-
-    if len(results) > 0:
-        results['state'] = state
-        results['party'] = party
-        results['year']  = year
-    else:
-        results = pd.DataFrame(columns=[
-            'candidate_id', 'candidate_name', 'party_donors_count',
-            'total_party_donors', 'total_candidate_donors',
-            'cross_partisan_donations', 'percentage',
-            'seat_info', 'seat_type', 'candidate_state',
-            'match_method', 'in_NIMSP', 'state', 'party', 'year',
-        ])
-
-    print(f"  → {len(results)} candidates, {len(unmatched)} unmatched")
-    return results, unmatched
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Year runner
+# Year runner — NIMSP-first orchestration
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run_analysis_for_year(parquet_file, primary_dates_path, year):
-    """Process all (state, party) combos for a given year."""
+    """
+    Process all states for a given year using the NIMSP-first strategy.
+
+    State discovery
+    ---------------
+    OLD: queried DIME's `seat` column for unique (state, year) combos.
+    NEW: derives the state list from which upperlower CSV files exist for
+         `year` — i.e. from the NIMSP Candidate Master List itself. DIME is
+         never asked about seat metadata.
+
+    Per-state loop
+    --------------
+    For each state that NIMSP covers:
+      1. Load ALL DIME CAND records for (state, year) — no seat/party filter.
+      2. Load DEM and REP party donor pools from NIMSP party_donor.
+      3. Run run_nimsp_first_analysis(): NIMSP candidates → DIME pool →
+         retroactive imputation of party/house/district.
+      4. Accumulate results.
+    """
     start_time = time.time()
 
-    # Fix 6: print data-coverage summary before doing any work
     log_parquet_summary(parquet_file, year)
-
     primary_lookup = load_primary_dates(primary_dates_path)
-    all_combos     = extract_unique_combos_parquet(parquet_file)
 
-    if not all_combos:
-        print("  No valid combinations found!")
+    # Build NIMSP candidate universe from upperlower CSVs
+    print(f"\n  Loading NIMSP candidate universe for {year}...")
+    nimsp_universe = load_district_reference(year)
+    if not nimsp_universe:
+        print(f"  No NIMSP upperlower data found for {year} — cannot proceed.")
         return
 
-    combos_for_year = [(s, p) for s, p, y in all_combos if y == year]
-    if not combos_for_year:
-        print(f"  No combinations found for year {year}.")
-        return
+    # Derive states from NIMSP, not from DIME seat column
+    states_in_nimsp = sorted(set(s for s, p, h in nimsp_universe.keys()))
+    print(f"  States with NIMSP data: {len(states_in_nimsp)}")
 
     print(f"\n{'='*60}")
-    print(f"  PROCESSING {year}: {len(combos_for_year)} state/party combos")
+    print(f"  PROCESSING {year}: {len(states_in_nimsp)} states  [NIMSP-FIRST]")
     print(f"{'='*60}")
 
-    district_ref  = load_district_reference(year)
-    year_results  = []
-    all_unmatched = []
+    year_results    = []
+    all_unmatched   = []
 
-    for state, party in combos_for_year:
+    for state in states_in_nimsp:
         primary_date = primary_lookup.get((state, year))
         if primary_date is None:
-            print(f"  {state}-{party}-{year}: SKIPPED — no primary date")
+            print(f"\n  {state}-{year}: SKIPPED — no primary date in lookup")
             continue
+
         try:
-            combo_result, unmatched_list = run_analysis_for_combo(
-                parquet_file, state, party, year, primary_date, district_ref,
+            # Phase 1: load ALL DIME CAND records (no seat/party filter)
+            dime_df      = load_all_dime_cand_records(parquet_file, state, year, primary_date)
+            # Load both party donor pools up front for this state/year
+            dem_donors   = load_party_data_smart(state, 'DEM', year, primary_date)
+            rep_donors   = load_party_data_smart(state, 'REP', year, primary_date)
+
+            # Phases 2 + 3: NIMSP-first matching + retroactive imputation
+            state_results, unmatched_list = run_nimsp_first_analysis(
+                state, year, nimsp_universe, dime_df, dem_donors, rep_donors,
             )
-            if len(combo_result) > 0:
-                year_results.append(combo_result)
+
+            if not state_results.empty:
+                year_results.append(state_results)
             all_unmatched.extend(unmatched_list)
+
         except Exception as e:
-            print(f"  ERROR {state}-{party}-{year}: {e}")
+            print(f"  ERROR {state}-{year}: {e}")
+            import traceback
+            traceback.print_exc()
             continue
 
     if not year_results:
@@ -759,25 +794,35 @@ def run_analysis_for_year(parquet_file, primary_dates_path, year):
         return
 
     year_df = pd.concat(year_results, ignore_index=True)
-    year_df = year_df.sort_values(['state', 'party', 'percentage'], ascending=[True, True, False])
+    year_df = year_df.sort_values(
+        ['state', 'party', 'percentage'],
+        ascending=[True, True, False],
+    )
 
     output_path = OUTPUT_FILE(year)
     year_df.to_csv(output_path, index=False)
 
-    total     = len(year_df)
-    matched   = (year_df['in_NIMSP'] == True).sum()
-    unmatched = total - matched
-    match_pct = matched / total * 100 if total else 0
-    elapsed   = time.time() - start_time
+    total   = len(year_df)
+    elapsed = time.time() - start_time
+
+    # Match-method breakdown
+    if 'match_method' in year_df.columns:
+        method_counts = year_df['match_method'].value_counts()
+        method_str = ', '.join(f"{m}:{c}" for m, c in method_counts.items())
+    else:
+        method_str = 'n/a'
+
+    nimsp_unmatched_total = len(all_unmatched)
 
     print(f"\n{'='*60}")
-    print(f"  SUMMARY — {year}")
+    print(f"  SUMMARY — {year}  [NIMSP-FIRST]")
     print(f"{'='*60}")
-    print(f"  Total candidates  : {total:,}")
-    print(f"  Matched to NIMSP  : {matched:,} ({match_pct:.1f}%)")
-    print(f"  Unmatched         : {unmatched:,} ({100-match_pct:.1f}%)")
-    print(f"  Runtime           : {int(elapsed//60)}m {elapsed%60:.1f}s")
-    print(f"  Output            : {output_path}")
+    print(f"  Candidates in output   : {total:,}")
+    print(f"  All in_NIMSP=True      : (all matched via NIMSP-first)")
+    print(f"  NIMSP unmatched total  : {nimsp_unmatched_total:,}")
+    print(f"  Match-method breakdown : {method_str}")
+    print(f"  Runtime                : {int(elapsed//60)}m {elapsed%60:.1f}s")
+    print(f"  Output                 : {output_path}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
