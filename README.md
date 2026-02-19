@@ -35,28 +35,28 @@ Step 1:
 
 **Download Helper (NIMSP, Primary Dates, etc.) CSV files** 
 ```bash
-python download_data.py --other
+python processing/download_data.py --other
 ```
 Step 2:
 
 **Option A: Download pre-made Parquet files** (most straightforward)
 ```bash
-python download_data.py --all
-python cspy-match.py
+python processing/download_data.py --all
+python analysis/cspy-match.py
 ```
 
 **Option B: Selective download** (recommended)
 ```bash
-python download_data.py --year 2000
-python cspy-match.py
+python processing/download_data.py --year 2000
+python analysis/cspy-match.py
 # Enter years: 2000
 ```
 
 ### What's Tracked in Git?
 
 ✅ **Tracked:**
-- All Python scripts (`*.py`)
-- Configuration files (`data_sources.json`, `paths.py`)
+- All Python scripts in `processing/`, `analysis/`, `utils/`
+- Configuration files (`data/data_sources.json`, `utils/paths.py`)
 - Documentation (`README.md`, `*.md`)
 - Directory structure markers
 
@@ -70,13 +70,37 @@ python cspy-match.py
 
 ```
 institutions/
-├── paths.py                          # Path management (DO NOT MOVE)
-├── download_data.py                 # Download data from Box cloud storage
-├── data_sources.json                # Box shared links configuration
+├── utils/
+│   └── paths.py                     # Central path management
+│
+├── data/
+│   └── data_sources.json            # Box shared links configuration
+│
+├── processing/                      # Data ETL & transformation scripts
+│   ├── download_data.py             # Download data from Box cloud storage
+│   ├── convert_year.py              # CSV to Parquet converter
+│   ├── convert_party_data.py        # Party data conversion helpers
+│   ├── extract_rows.py              # Row extraction utility
+│   ├── update_candidate_ids_2000.py
+│   └── update_candidate_state_2000.py
+│
+├── analysis/                        # Analysis & matching scripts
+│   ├── cspy-match.py                # Main candidate-party matching script
+│   ├── cspy-match2.py               # Variant matching logic
+│   ├── cspy-match3.py               # Variant matching logic
+│   ├── nul_recipients.py            # Recipients analysis
+│   ├── nul_combo_hotspots.py        # Hotspot analysis
+│   ├── bonica_rid_counts.py         # Bonica ID counting
+│   ├── party_registration_trend.py  # Registration trends
+│   ├── fallback_analysis.py         # Fallback analysis
+│   ├── validate_output.py           # Output validation
+│   ├── source_compare.py            # Source comparison
+│   ├── source_integrity_checks.py   # Data integrity checks
+│   ├── source_rowsize_comparison.py # Row size analysis
+│   └── source_year_breakdown.py     # Year-wise breakdown
+│
 ├── .gitignore                       # Exclude data files from Git
-├── cspy-match.py                    # Main analysis script
-├── convert_year.py                  # CSV to Parquet converter
-├── extract_rows.py                  # Row extraction utility
+├── README.md                        # This file
 │
 ├── DIME data/
 │   ├── YYYY_candidate_donor.csv
@@ -84,7 +108,7 @@ institutions/
 │   │   └── YYYY_candidate_donor.parquet
 │
 ├── NIMSP data/
-│   ├── party_donor.parquet
+│   ├── party_donor.csv
 │   └── notes.txt
 │
 ├── outputs/
@@ -101,12 +125,13 @@ institutions/
 
 ## Important Notes
 
-1. **`paths.py` must stay in the workspace root** - All path resolution depends on it
-2. **No global paths in scripts** - If you see hardcoded paths, they should be moved to `paths.py`
-3. **Relative paths work everywhere** - Pass relative paths to utility functions; they'll be converted to absolute paths automatically
-4. **Output directories auto-create** - No need to manually create `outputs/`, `{year}_parquet/`, etc.
-5. **Name matching is intelligent** - Uses 3-tier strategy (exact → token-subset → fuzzy) to achieve ~90% match rate
-6. **One-pass processing** - `cspy-match.py` now produces correct output directly; retcon scripts no longer needed
+1. **Central path module** - All scripts import from `utils.paths` for path resolution
+2. **Config in data folder** - `data/data_sources.json` stores Box download links
+3. **Organized by purpose** - `processing/` for ETL, `analysis/` for matching & inspection scripts
+4. **Relative paths work everywhere** - Scripts accept relative paths and resolve them correctly
+5. **Output directories auto-create** - No need to manually create `outputs/`, `{year}_parquet/`, etc.
+6. **Name matching is intelligent** - Uses 3-tier strategy (exact → token-subset → fuzzy) to achieve ~90% match rate
+7. **One-pass processing** - `cspy-match.py` now produces correct output directly; retcon scripts no longer needed
 
 ## Output Format
 
@@ -124,15 +149,16 @@ The analysis CSV contains:
 ## Troubleshooting
 
 **FileNotFoundError when running scripts:**
-- Ensure you're in the workspace directory or have the correct working directory
+- Ensure you're in the workspace root directory when running scripts
 - Check that all input data files exist in their expected locations
 - Verify file names match exactly (case-sensitive on Linux/Mac)
 
 **Parquet files not creating:**
-- Run: `python convert_year.py 2000 --overwrite` to force re-creation
+- Run: `python processing/convert_year.py 2000 --overwrite` to force re-creation
 - Check that `DIME data/` folder contains CSV files
 - Ensure DuckDB is installed: `pip install duckdb`
 
-**Paths module not found:**
-- Make sure `paths.py` is in the same directory as the script you're running
-- Verify `__init__.py` is NOT needed (this is a single-file module)
+**Import errors for utils.paths:**
+- Make sure you're running scripts from the workspace root directory
+- Verify that the `utils/` and `utils/paths.py` exist
+- Check PYTHONPATH includes the workspace root if running from subdirectories
