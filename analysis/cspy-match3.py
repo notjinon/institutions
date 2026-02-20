@@ -460,26 +460,29 @@ def load_all_dime_cand_records(parquet_file, state, year, primary_date=None):
         con.close()
 
 
-def build_dime_candidate_list(dime_df):
+def build_dime_candidate_list(dime_df, party_codes=None):
     """
-    Build a flat list of unique DIME candidate dicts from the unfiltered pool.
+    Build a flat list of unique DIME candidate dicts from the pool.
 
-    Each dict has the keys expected by match_candidate_name():
-        name_norm  — normalize_name() of recipient.name
-        last_norm  — extract_last_name() of recipient.name
-    Plus extra fields used after a successful match:
-        raw_name   — original recipient.name string
-        bonica_rid — bonica.rid value (used to retrieve transactions)
-
-    This list is the search space for Phase 2 NIMSP-first matching.
+    party_codes : optional list of recipient.party values to include,
+                  e.g. ['100'] for DEM or ['200'] for REP.
+                  Rows with NULL recipient.party are ALWAYS included
+                  (those are exactly the broken-metadata records we want).
+                  Pass None to include the full unfiltered pool.
     """
+    if party_codes is not None and 'recipient.party' in dime_df.columns:
+        mask = dime_df['recipient.party'].isin(party_codes) | dime_df['recipient.party'].isna()
+        pool = dime_df[mask]
+    else:
+        pool = dime_df
+
     candidates = []
     seen_rids = set()
-    for rid in dime_df['bonica.rid'].unique():
+    for rid in pool['bonica.rid'].unique():
         if rid in seen_rids:
             continue
         seen_rids.add(rid)
-        rows = dime_df[dime_df['bonica.rid'] == rid]
+        rows = pool[pool['bonica.rid'] == rid]
         name = rows['recipient.name'].iloc[0] if not rows.empty else ''
         candidates.append({
             'name_norm': normalize_name(name),
@@ -530,8 +533,13 @@ def run_nimsp_first_analysis(state, year, nimsp_universe, dime_df, dem_donors, r
         print("    No DIME CAND records found — skipping.")
         return pd.DataFrame(), []
 
-    dime_candidate_list = build_dime_candidate_list(dime_df)
-    print(f"    DIME candidate pool (unfiltered): {len(dime_candidate_list):,}")
+    # Build party-scoped DIME search pools.
+    # recipient.party codes: '100' = DEM, '200' = REP.
+    # NULL-party rows (the broken-metadata candidates we're here to rescue)
+    # are included in BOTH pools — NIMSP matching resolves their true party.
+    dem_dime_list = build_dime_candidate_list(dime_df, party_codes=['100'])
+    rep_dime_list = build_dime_candidate_list(dime_df, party_codes=['200'])
+    print(f"    DIME pool — DEM: {len(dem_dime_list):,}  REP: {len(rep_dime_list):,}")
 
     # ── Pre-build donor name sets ──────────────────────────────────────────
     def _make_donor_set(df):
@@ -559,14 +567,14 @@ def run_nimsp_first_analysis(state, year, nimsp_universe, dime_df, dem_donors, r
         opp_donor_names   = rep_donor_names if party == 'DEM' else dem_donor_names
         total_party_donors = len(party_donor_names)
 
+        dime_pool = dem_dime_list if party == 'DEM' else rep_dime_list
+
         for nimsp_ref in ref_list:
-            # ── Phase 2: match this NIMSP candidate against the DIME pool ──
-            # match_candidate_name() is direction-agnostic; we pass the NIMSP
-            # candidate's name as the "query" and the DIME pool as the ref list.
+            # ── Phase 2: match this NIMSP candidate against the party-scoped DIME pool ──
             matched_dime, method = match_candidate_name(
                 nimsp_ref['name_norm'],
                 nimsp_ref['last_norm'],
-                dime_candidate_list,
+                dime_pool,
             )
 
             if matched_dime is None:
@@ -629,7 +637,7 @@ def run_nimsp_first_analysis(state, year, nimsp_universe, dime_df, dem_donors, r
             })
 
     # ── Diagnostic counts ──────────────────────────────────────────────────
-    all_rids = {c['bonica_rid'] for c in dime_candidate_list}
+    all_rids = set(dime_df['bonica.rid'].unique())
     orphan_count = len(all_rids - used_rids)
     nimsp_total  = sum(
         len(rlist)
@@ -760,6 +768,16 @@ def run_analysis_for_year(parquet_file, primary_dates_path, year):
         primary_date = primary_lookup.get((state, year))
         if primary_date is None:
             print(f"\n  {state}-{year}: SKIPPED — no primary date in lookup")
+            # Still record every NIMSP candidate for this state as unmatched
+            # so they show up in the final count rather than vanishing silently.
+            for (ks, kp, kh), rlist in nimsp_universe.items():
+                if ks == state:
+                    for nimsp_ref in rlist:
+                        all_unmatched.append({
+                            'nimsp_name': nimsp_ref['name_norm'],
+                            'state': state, 'party': kp,
+                            'house': kh,   'year':  year,
+                        })
             continue
 
         try:
@@ -799,25 +817,38 @@ def run_analysis_for_year(parquet_file, primary_dates_path, year):
 
     total   = len(year_df)
     elapsed = time.time() - start_time
-
-    # Match-method breakdown
-    if 'match_method' in year_df.columns:
-        method_counts = year_df['match_method'].value_counts()
-        method_str = ', '.join(f"{m}:{c}" for m, c in method_counts.items())
-    else:
-        method_str = 'n/a'
-
     nimsp_unmatched_total = len(all_unmatched)
+    nimsp_total = total + nimsp_unmatched_total  # full NIMSP universe that entered matching
+
+    # ── Match-method bar chart ─────────────────────────────────────────────
+    BAR_W = 32
+    def _bar(n, denom):
+        filled = int(round(n / max(denom, 1) * BAR_W))
+        return '█' * filled + '░' * (BAR_W - filled)
+
+    if 'match_method' in year_df.columns:
+        mm = year_df['match_method']
+        exact_n  = int((mm == 'exact').sum())
+        subset_n = int((mm == 'token_subset').sum())
+        fuzzy_n  = int(mm.str.startswith('fuzzy').sum())
+    else:
+        exact_n = subset_n = fuzzy_n = 0
+    fallback_n = nimsp_unmatched_total
 
     print(f"\n{'='*60}")
     print(f"  SUMMARY — {year}  [NIMSP-FIRST]")
     print(f"{'='*60}")
-    print(f"  Candidates in output   : {total:,}")
-    print(f"  All in_NIMSP=True      : (all matched via NIMSP-first)")
-    print(f"  NIMSP unmatched total  : {nimsp_unmatched_total:,}")
-    print(f"  Match-method breakdown : {method_str}")
+    print(f"  Matched / Total NIMSP  : {total:,} / {nimsp_total:,}")
     print(f"  Runtime                : {int(elapsed//60)}m {elapsed%60:.1f}s")
     print(f"  Output                 : {output_path}")
+    print(f"")
+    print(f"  {'Method':<14} {'':>{BAR_W}}   n")
+    print(f"  {'─'*14} {'─'*BAR_W}   {'─'*6}")
+    print(f"  {'exact':<14} {_bar(exact_n,  nimsp_total)}   {exact_n:,}")
+    print(f"  {'token_subset':<14} {_bar(subset_n, nimsp_total)}   {subset_n:,}")
+    print(f"  {'fuzzy_last':<14} {_bar(fuzzy_n,  nimsp_total)}   {fuzzy_n:,}")
+    print(f"  {'fallback':<14} {_bar(fallback_n, nimsp_total)}   {fallback_n:,}  (unmatched)")
+    print(f"{'='*60}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
