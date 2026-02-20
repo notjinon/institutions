@@ -25,6 +25,8 @@ except ImportError:
     print("   pip install requests tqdm")
     sys.exit(1)
 
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.paths import DIME_PARQUET_FILE, ensure_parquet_dir_exists
 
 # Config file location

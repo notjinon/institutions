@@ -10,6 +10,8 @@ Key idea:
 Outputs to: DIME data/{year}_parquet/{year}_candidate_donor.parquet
 """
 
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import argparse
 import shutil
 from pathlib import Path

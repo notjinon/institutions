@@ -15,6 +15,8 @@ from __future__ import annotations
 import argparse
 import csv
 import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pathlib import Path
 
 import duckdb

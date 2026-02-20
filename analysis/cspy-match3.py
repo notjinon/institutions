@@ -62,30 +62,25 @@ Usage:
     # Enter years when prompted: 2018, 2020, 2022
 """
 
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pandas as pd
 import re
-import sys
-import importlib.util
 import duckdb
 import time
 from difflib import SequenceMatcher
 from pathlib import Path
 
-# Load utils.paths directly by file path (avoids import system issues)
-workspace_root = Path(__file__).parent.parent
-paths_module_path = workspace_root / "utils" / "paths.py"
-spec = importlib.util.spec_from_file_location("utils.paths", paths_module_path)
-paths = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(paths)
-
-DIME_PARQUET_FILE = paths.DIME_PARQUET_FILE
-NIMSP_PARTY_DATA = paths.NIMSP_PARTY_DATA
-NIMSP_PARTY_DATA_PARQUET = paths.NIMSP_PARTY_DATA_PARQUET
-PRIMARY_DATES_FILE = paths.PRIMARY_DATES_FILE
-UPPER_HOUSE_FILE = paths.UPPER_HOUSE_FILE
-LOWER_HOUSE_FILE = paths.LOWER_HOUSE_FILE
-OUTPUT_FILE = paths.OUTPUT_FILE
-ensure_output_dir_exists = paths.ensure_output_dir_exists
+from utils.paths import (
+    DIME_PARQUET_FILE,
+    NIMSP_PARTY_DATA,
+    NIMSP_PARTY_DATA_PARQUET,
+    PRIMARY_DATES_FILE,
+    UPPER_HOUSE_FILE,
+    LOWER_HOUSE_FILE,
+    OUTPUT_FILE,
+    ensure_output_dir_exists,
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
